@@ -41,9 +41,19 @@ type Transaction = {
   card_id: number | null; category_id: number | null; category_name: string | null;
   account_name: string | null; payment_method: string | null; notes: string | null;
 };
+type BudgetRow = {
+  id: number; person_id: number; person_name: string; category_id: number; category_name: string;
+  parent_name: string | null; start_year: number; start_month: number; planned: string; paid: string;
+  pending: string; spent: string; remaining: string; percent: number; exceeded: boolean; released: boolean;
+  released_amount: string; include_in_projection: boolean;
+};
+type BudgetPayload = {
+  person_id: number; category_id: number; amount: string; start_year: number; start_month: number;
+  include_in_projection: boolean;
+};
 type Bootstrap = { user: User; selected_area_id: number | null; areas: Area[]; accounts: Account[]; cards: Card[]; categories: Category[] };
 type DashboardData = { date: string; selected_area_id: number | null; balance: string; month: { year: number; month: number; income: string; expenses: string; net: string }; recent_transactions: Transaction[] };
-type MonthData = { year: number; month: number; selected_area_id: number | null; is_closed: boolean; income: string; expenses: string; net: string; transactions: Transaction[] };
+type MonthData = { year: number; month: number; selected_area_id: number | null; is_closed: boolean; income: string; expenses: string; net: string; opening_balance: string; closing_balance: string; projected_balance: string; budget_projection_remaining: string; budgets: BudgetRow[]; transactions: Transaction[] };
 type Option = { label: string; value: string };
 
 class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
@@ -178,6 +188,24 @@ function FinanceApp() {
     } finally { setSubmitting(false); }
   };
 
+  const saveBudget = async (budgetId: number | null, payload: BudgetPayload) => {
+    if (!token) throw new Error('Sua sessão expirou. Entre novamente.');
+    const body = budgetId ? {
+      amount: payload.amount, start_year: payload.start_year, start_month: payload.start_month,
+      include_in_projection: payload.include_in_projection,
+    } : payload;
+    await api(budgetId ? `/budgets/${budgetId}` : '/budgets', token, {
+      method: budgetId ? 'PATCH' : 'POST', body: JSON.stringify(body),
+    });
+    await refresh(true);
+  };
+
+  const deleteBudget = async (budgetId: number) => {
+    if (!token) throw new Error('Sua sessão expirou. Entre novamente.');
+    await api(`/budgets/${budgetId}`, token, { method: 'DELETE' });
+    await refresh(true);
+  };
+
   if (booting) return <View style={styles.center}><ActivityIndicator size="large" color={C.purpleLight} /></View>;
   if (!token) return <LoginScreen onLogin={signIn} loading={submitting} message={message} />;
 
@@ -204,6 +232,9 @@ function FinanceApp() {
         )}
         {tab === 'month' && (
           <MonthScreen data={monthData} cursor={monthOptions} loading={loading}
+            cards={bootstrap?.cards ?? []} categories={bootstrap?.categories.filter((item) => item.kind === 'expense') ?? []}
+            canManageBudgets={bootstrap?.areas.some((area) => area.id === areaId && area.can_write) ?? false}
+            onSaveBudget={saveBudget} onDeleteBudget={deleteBudget}
             onPrevious={() => setMonthCursor((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
             onNext={() => setMonthCursor((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}
             onRefresh={() => refresh()} onCreate={() => setTab('create')} />
@@ -286,18 +317,38 @@ function DashboardScreen({ data, loading, onRefresh, onMonth, onCreate }: {
   );
 }
 
-function MonthScreen({ data, cursor, loading, onPrevious, onNext, onRefresh, onCreate }: {
-  data: MonthData | null; cursor: { year: number; month: number }; loading: boolean;
+function MonthScreen({ data, cursor, loading, cards, categories, canManageBudgets, onSaveBudget, onDeleteBudget, onPrevious, onNext, onRefresh, onCreate }: {
+  data: MonthData | null; cursor: { year: number; month: number }; loading: boolean; cards: Card[]; categories: Category[];
+  canManageBudgets: boolean; onSaveBudget: (budgetId: number | null, payload: BudgetPayload) => Promise<void>;
+  onDeleteBudget: (budgetId: number) => Promise<void>;
   onPrevious: () => void; onNext: () => void; onRefresh: () => void; onCreate: () => void;
 }) {
   const [filter, setFilter] = useState<'all' | TransactionType>('all');
+  const [selectedCardId, setSelectedCardId] = useState<number | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingBudget, setEditingBudget] = useState<BudgetRow | null>(null);
+  const cardGroups = useMemo(() => {
+    const groups = new Map<number, { items: Transaction[]; total: number; paid: number; pending: number }>();
+    for (const item of data?.transactions ?? []) {
+      if (item.transaction_type !== 'expense' || item.card_id == null) continue;
+      const group = groups.get(item.card_id) ?? { items: [], total: 0, paid: 0, pending: 0 };
+      group.items.push(item);
+      const amount = Number(item.amount);
+      group.total += amount;
+      if (item.status === 'paid') group.paid += amount;
+      if (item.status === 'pending') group.pending += amount;
+      groups.set(item.card_id, group);
+    }
+    return [...groups.entries()].map(([id, group]) => ({ id, card: cards.find((item) => item.id === id), ...group }));
+  }, [data?.transactions, cards]);
+  const cardDetail = cardGroups.find((group) => group.id === selectedCardId);
   const transactions = useMemo(() => {
     const filtered = (data?.transactions ?? []).filter((item) => filter === 'all' || item.transaction_type === filter);
     return filtered.sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
   }, [data?.transactions, filter]);
   const dayGroups = useMemo(() => {
     const groups = new Map<string, { items: Transaction[]; income: number; expenses: number }>();
-    for (const item of transactions) {
+    for (const item of transactions.filter((item) => item.card_id == null)) {
       const group = groups.get(item.transaction_date) ?? { items: [], income: 0, expenses: 0 };
       group.items.push(item);
       if (item.transaction_type === 'income') group.income += Number(item.amount);
@@ -316,39 +367,157 @@ function MonthScreen({ data, cursor, loading, onPrevious, onNext, onRefresh, onC
     { key: 'all', label: 'Tudo' }, { key: 'expense', label: 'Saídas' },
     { key: 'income', label: 'Entradas' }, { key: 'transfer', label: 'Transf.' },
   ];
+  const openBudgetEditor = (budget: BudgetRow | null = null) => {
+    setEditingBudget(budget);
+    setEditorOpen(true);
+  };
+  const closeBudgetEditor = () => { setEditorOpen(false); setEditingBudget(null); };
+  const confirmDeleteBudget = (budget: BudgetRow) => Alert.alert(
+    'Excluir orçamento', `O limite de ${budget.category_name} deixará de aparecer nos próximos meses.`,
+    [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: () => {
+      void onDeleteBudget(budget.id).catch((error) => Alert.alert('Não foi possível excluir', friendlyError(error)));
+    } }],
+  );
+
+  if (selectedCardId != null) return <CardMonthDetail
+    card={cardDetail?.card} cardId={selectedCardId} cursor={cursor} transactions={cardDetail?.items ?? []}
+    loading={loading} onBack={() => setSelectedCardId(null)} onPrevious={onPrevious} onNext={onNext}
+    onRefresh={onRefresh} onCreate={onCreate}
+  />;
 
   return (
-    <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={C.purpleLight} colors={[C.purple]} />}>
-      <View style={styles.monthNav}>
-        <Pressable style={styles.navCircle} onPress={onPrevious} accessibilityLabel="Mês anterior"><Feather name="chevron-left" size={21} color={C.text} /></Pressable>
-        <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>COMPETÊNCIA</Text><Text style={styles.monthTitle}>{monthName(cursor.year, cursor.month)}</Text><View style={[styles.periodBadge, data?.is_closed && styles.periodBadgeClosed]}><View style={[styles.periodDot, data?.is_closed && styles.periodDotClosed]} /><Text style={[styles.periodBadgeText, data?.is_closed && styles.periodBadgeTextClosed]}>{data?.is_closed ? 'Mês fechado' : 'Mês aberto'}</Text></View></View>
-        <Pressable style={styles.navCircle} onPress={onNext} accessibilityLabel="Próximo mês"><Feather name="chevron-right" size={21} color={C.text} /></Pressable>
-      </View>
-      <View style={styles.monthSummary}>
-        <View><Text style={styles.summaryLabel}>Entradas</Text><Text style={[styles.summaryValue, { color: C.green }]}>{money(data?.income)}</Text></View>
-        <View style={styles.summaryDivider} />
-        <View><Text style={styles.summaryLabel}>Saídas</Text><Text style={[styles.summaryValue, { color: C.red }]}>{money(data?.expenses)}</Text></View>
-      </View>
-      <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos</Text><Text style={styles.panelSubtitle}>{transactions.length} de {data?.transactions.length ?? 0} neste mês</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthFilters}>
-        {filters.map((item) => <Pressable key={item.key} accessibilityRole="button" accessibilityState={{ selected: filter === item.key }} onPress={() => setFilter(item.key)} style={[styles.monthFilter, filter === item.key && styles.monthFilterActive]}><Text style={[styles.monthFilterText, filter === item.key && styles.monthFilterTextActive]}>{item.label}</Text><Text style={[styles.monthFilterCount, filter === item.key && styles.monthFilterCountActive]}>{counts[item.key]}</Text></Pressable>)}
-      </ScrollView>
-      {dayGroups.length ? dayGroups.map((group) => {
-        const date = new Date(`${group.date}T12:00:00`);
-        const label = capitalizeFirst(date.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }));
-        return <View key={group.date} style={styles.dayGroup}>
-          <View style={styles.dayGroupHeading}>
-            <View style={styles.dayGroupCopy}><Text style={styles.dayGroupDate}>{label}</Text><Text style={styles.dayGroupCount}>{group.items.length} {group.items.length === 1 ? 'lançamento' : 'lançamentos'}</Text></View>
-            <View style={styles.dayGroupTotals}>
-              {group.income > 0 && <Text style={[styles.dayGroupTotal, { color: C.green }]}>+ {money(group.income)}</Text>}
-              {group.expenses > 0 && <Text style={[styles.dayGroupTotal, { color: C.red }]}>− {money(group.expenses)}</Text>}
+    <>
+      <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={C.purpleLight} colors={[C.purple]} />}>
+        <View style={styles.monthNav}>
+          <Pressable style={styles.navCircle} onPress={onPrevious} accessibilityLabel="Mês anterior"><Feather name="chevron-left" size={21} color={C.text} /></Pressable>
+          <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>COMPETÊNCIA</Text><Text style={styles.monthTitle}>{monthName(cursor.year, cursor.month)}</Text><View style={[styles.periodBadge, data?.is_closed && styles.periodBadgeClosed]}><View style={[styles.periodDot, data?.is_closed && styles.periodDotClosed]} /><Text style={[styles.periodBadgeText, data?.is_closed && styles.periodBadgeTextClosed]}>{data?.is_closed ? 'Mês fechado' : 'Mês aberto'}</Text></View></View>
+          <Pressable style={styles.navCircle} onPress={onNext} accessibilityLabel="Próximo mês"><Feather name="chevron-right" size={21} color={C.text} /></Pressable>
+        </View>
+        <View style={styles.projectedCard}>
+          <View style={styles.projectedCardHeader}><View><Text style={styles.projectedLabel}>SALDO PROJETADO</Text><Text style={[styles.projectedValue, Number(data?.projected_balance ?? 0) < 0 && { color: C.red }]}>{money(data?.projected_balance)}</Text></View><View style={styles.projectedIcon}><Feather name="trending-up" size={19} color={C.purpleLight} /></View></View>
+          <View style={styles.projectedFoot}><Text style={styles.projectedFootText}>Saldo inicial {money(data?.opening_balance)}</Text><View style={styles.summaryDivider} /><Text style={styles.projectedFootText}>Reserva {money(data?.budget_projection_remaining)}</Text></View>
+        </View>
+        <View style={styles.monthSummary}>
+          <View><Text style={styles.summaryLabel}>Entradas</Text><Text style={[styles.summaryValue, { color: C.green }]}>{money(data?.income)}</Text></View>
+          <View style={styles.summaryDivider} />
+          <View><Text style={styles.summaryLabel}>Saídas</Text><Text style={[styles.summaryValue, { color: C.red }]}>{money(data?.expenses)}</Text></View>
+        </View>
+        <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos</Text><Text style={styles.panelSubtitle}>{transactions.length} de {data?.transactions.length ?? 0} neste mês</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthFilters}>
+          {filters.map((item) => <Pressable key={item.key} accessibilityRole="button" accessibilityState={{ selected: filter === item.key }} onPress={() => setFilter(item.key)} style={[styles.monthFilter, filter === item.key && styles.monthFilterActive]}><Text style={[styles.monthFilterText, filter === item.key && styles.monthFilterTextActive]}>{item.label}</Text><Text style={[styles.monthFilterCount, filter === item.key && styles.monthFilterCountActive]}>{counts[item.key]}</Text></Pressable>)}
+        </ScrollView>
+        {dayGroups.map((group) => {
+          const date = new Date(`${group.date}T12:00:00`);
+          const label = capitalizeFirst(date.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }));
+          return <View key={group.date} style={styles.dayGroup}>
+            <View style={styles.dayGroupHeading}>
+              <View style={styles.dayGroupCopy}><Text style={styles.dayGroupDate}>{label}</Text><Text style={styles.dayGroupCount}>{group.items.length} {group.items.length === 1 ? 'lançamento' : 'lançamentos'}</Text></View>
+              <View style={styles.dayGroupTotals}>
+                {group.income > 0 && <Text style={[styles.dayGroupTotal, { color: C.green }]}>+ {money(group.income)}</Text>}
+                {group.expenses > 0 && <Text style={[styles.dayGroupTotal, { color: C.red }]}>− {money(group.expenses)}</Text>}
+              </View>
             </View>
-          </View>
-          <View style={[styles.panel, styles.dayGroupPanel]}>{group.items.map((item) => <TransactionRow key={item.id} item={item} />)}</View>
-        </View>;
-      }) : <View style={styles.panel}><EmptyState title={data?.transactions.length ? 'Nada neste filtro' : 'Nenhum lançamento'} subtitle={data?.transactions.length ? 'Escolha outro tipo para ver os lançamentos.' : 'Este mês ainda não tem movimentações.'} action={data?.transactions.length ? undefined : 'Adicionar lançamento'} onAction={data?.transactions.length ? undefined : onCreate} /></View>}
-    </ScrollView>
+            <View style={[styles.panel, styles.dayGroupPanel]}>{group.items.map((item) => <TransactionRow key={item.id} item={item} />)}</View>
+          </View>;
+        })}
+        {(filter === 'all' || filter === 'expense') && cardGroups.length > 0 && <View style={styles.monthSection}>
+          <View><Text style={styles.panelTitle}>Compras no cartão</Text><Text style={styles.panelSubtitle}>Toque em um cartão para ver só os lançamentos dele</Text></View>
+          {cardGroups.map((group) => <Pressable key={group.id} style={styles.cardMonthRow} onPress={() => setSelectedCardId(group.id)} accessibilityRole="button" accessibilityLabel={`Ver lançamentos do cartão ${group.card?.name ?? group.id}`}>
+            <View style={styles.cardMonthIcon}><Feather name="credit-card" size={18} color={C.purpleLight} /></View>
+            <View style={styles.cardMonthCopy}><Text style={styles.transactionName} numberOfLines={1}>{group.card?.name ?? 'Cartão'}</Text><Text style={styles.transactionMeta}>{group.items.length} {group.items.length === 1 ? 'compra' : 'compras'} · {group.pending ? `${money(group.pending)} pendente` : 'sem pendências'}</Text></View>
+            <View style={styles.cardMonthAmount}><Text style={styles.transactionAmountText}>{money(group.total)}</Text><Feather name="chevron-right" size={17} color={C.muted} /></View>
+          </Pressable>)}
+        </View>}
+        {!dayGroups.length && !(filter === 'all' || filter === 'expense') && <View style={styles.panel}><EmptyState title="Nada neste filtro" subtitle="Escolha outro tipo para ver os lançamentos." /></View>}
+        {!dayGroups.length && (filter === 'all' || filter === 'expense') && !cardGroups.length && <View style={styles.panel}><EmptyState title={data?.transactions.length ? 'Nada neste filtro' : 'Nenhum lançamento'} subtitle={data?.transactions.length ? 'Escolha outro tipo para ver os lançamentos.' : 'Este mês ainda não tem movimentações.'} action={data?.transactions.length ? undefined : 'Adicionar lançamento'} onAction={data?.transactions.length ? undefined : onCreate} /></View>}
+        <View style={styles.monthSection}>
+          <View style={styles.budgetSectionHeader}><View><Text style={styles.panelTitle}>Orçamento</Text><Text style={styles.panelSubtitle}>{data?.budgets.length ?? 0} {data?.budgets.length === 1 ? 'limite para este mês' : 'limites para este mês'}</Text></View>{canManageBudgets && <Pressable style={styles.roundAdd} onPress={() => openBudgetEditor()} accessibilityLabel="Criar orçamento"><Feather name="plus" size={18} color="white" /></Pressable>}</View>
+          {data?.budgets.length ? data.budgets.map((budget) => <BudgetCard key={budget.id} budget={budget} canManage={canManageBudgets} onEdit={() => openBudgetEditor(budget)} onDelete={() => confirmDeleteBudget(budget)} />) : <View style={styles.panel}><EmptyState title="Nenhum orçamento definido" subtitle={canManageBudgets ? 'Defina limites por categoria e acompanhe o impacto no saldo projetado.' : 'Ainda não há limites para esta área financeira.'} action={canManageBudgets ? 'Criar orçamento' : undefined} onAction={canManageBudgets ? () => openBudgetEditor() : undefined} /></View>}
+        </View>
+      </ScrollView>
+      <BudgetEditor visible={editorOpen} budget={editingBudget} cursor={cursor} personId={data?.selected_area_id ?? null}
+        categories={categories} onClose={closeBudgetEditor} onSave={onSaveBudget} />
+    </>
   );
+}
+
+function CardMonthDetail({ card, cardId, cursor, transactions, loading, onBack, onPrevious, onNext, onRefresh, onCreate }: {
+  card?: Card; cardId: number; cursor: { year: number; month: number }; transactions: Transaction[]; loading: boolean;
+  onBack: () => void; onPrevious: () => void; onNext: () => void; onRefresh: () => void; onCreate: () => void;
+}) {
+  const total = transactions.reduce((sum, item) => sum + Number(item.amount), 0);
+  const pending = transactions.filter((item) => item.status === 'pending').reduce((sum, item) => sum + Number(item.amount), 0);
+  const sorted = [...transactions].sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+  return <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={C.purpleLight} colors={[C.purple]} />}>
+    <Pressable style={styles.backToMonth} onPress={onBack}><Feather name="arrow-left" size={17} color={C.purpleLight} /><Text style={styles.backToMonthText}>Voltar aos lançamentos</Text></Pressable>
+    <View style={styles.monthNav}>
+      <Pressable style={styles.navCircle} onPress={onPrevious} accessibilityLabel="Mês anterior"><Feather name="chevron-left" size={21} color={C.text} /></Pressable>
+      <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>{card?.brand || 'CARTÃO'}</Text><Text style={styles.monthTitle}>{card?.name ?? `Cartão ${cardId}`}</Text><Text style={styles.panelSubtitle}>{monthName(cursor.year, cursor.month)}</Text></View>
+      <Pressable style={styles.navCircle} onPress={onNext} accessibilityLabel="Próximo mês"><Feather name="chevron-right" size={21} color={C.text} /></Pressable>
+    </View>
+    <View style={styles.cardDetailSummary}><View><Text style={styles.summaryLabel}>Compras neste mês</Text><Text style={styles.cardDetailTotal}>{money(total)}</Text></View><View style={styles.summaryDivider} /><View><Text style={styles.summaryLabel}>A pagar</Text><Text style={[styles.cardDetailPending, { color: pending ? C.red : C.green }]}>{money(pending)}</Text></View></View>
+    <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos do cartão</Text><Text style={styles.panelSubtitle}>{transactions.length} neste mês</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
+    <View style={styles.panel}>{sorted.length ? sorted.map((item) => <TransactionRow key={item.id} item={item} showDate />) : <EmptyState title="Nenhuma compra neste mês" subtitle="As compras deste cartão aparecerão aqui." />}</View>
+  </ScrollView>;
+}
+
+function BudgetCard({ budget, canManage, onEdit, onDelete }: {
+  budget: BudgetRow; canManage: boolean; onEdit: () => void; onDelete: () => void;
+}) {
+  return <View style={[styles.budgetCard, budget.exceeded && styles.budgetCardExceeded, budget.released && styles.budgetCardReleased]}>
+    <View style={styles.budgetCardHeading}><View style={styles.budgetCardTitle}><Text style={styles.transactionName}>{budget.parent_name ? `${budget.parent_name} · ${budget.category_name}` : budget.category_name}</Text><Text style={styles.transactionMeta}>{budget.person_name}{budget.released ? ' · reserva liberada' : ''}</Text></View><Text style={[styles.budgetRemaining, budget.exceeded && { color: C.red }]}>{budget.released ? `${money(budget.released_amount)} liberados` : money(budget.remaining)}</Text></View>
+    <View style={styles.budgetProgressTrack}><View style={[styles.budgetProgressFill, { width: `${Math.max(0, Math.min(100, budget.percent))}%` }, budget.exceeded && styles.budgetProgressExceeded]} /></View>
+    <View style={styles.budgetStats}><Text style={styles.budgetStat}>Limite <Text style={styles.budgetStatValue}>{money(budget.planned)}</Text></Text><Text style={styles.budgetStat}>Realizado <Text style={styles.budgetStatValue}>{money(budget.paid)}</Text></Text><Text style={styles.budgetStat}>Pendente <Text style={styles.budgetStatValue}>{money(budget.pending)}</Text></Text></View>
+    <View style={styles.budgetCardFooter}><Text style={styles.budgetProjectionHint}>{budget.include_in_projection ? 'Considerado na projeção' : 'Fora da projeção'}</Text>{canManage && <View style={styles.budgetActions}><Pressable onPress={onEdit} accessibilityLabel="Editar orçamento"><Feather name="edit-2" size={16} color={C.purpleLight} /></Pressable><Pressable onPress={onDelete} accessibilityLabel="Excluir orçamento"><Feather name="trash-2" size={16} color={C.red} /></Pressable></View>}</View>
+  </View>;
+}
+
+function BudgetEditor({ visible, budget, cursor, personId, categories, onClose, onSave }: {
+  visible: boolean; budget: BudgetRow | null; cursor: { year: number; month: number }; personId: number | null;
+  categories: Category[]; onClose: () => void; onSave: (budgetId: number | null, payload: BudgetPayload) => Promise<void>;
+}) {
+  const [categoryId, setCategoryId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [includeInProjection, setIncludeInProjection] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!visible) return;
+    setCategoryId(budget ? String(budget.category_id) : '');
+    setAmount(budget?.planned ?? '');
+    setIncludeInProjection(budget?.include_in_projection ?? true);
+    setError('');
+  }, [visible, budget?.id, cursor.year, cursor.month]);
+  const save = async () => {
+    const enteredAmount = amount.trim();
+    const normalizedAmount = enteredAmount.includes(',')
+      ? enteredAmount.replace(/\./g, '').replace(',', '.')
+      : enteredAmount;
+    if (!personId || (!budget && !categoryId) || !Number.isFinite(Number(normalizedAmount)) || Number(normalizedAmount) <= 0) {
+      setError('Informe a categoria e um limite maior que zero.');
+      return;
+    }
+    setSaving(true); setError('');
+    try {
+      await onSave(budget?.id ?? null, {
+        person_id: personId, category_id: Number(categoryId), amount: normalizedAmount,
+        start_year: budget?.start_year ?? cursor.year, start_month: budget?.start_month ?? cursor.month,
+        include_in_projection: includeInProjection,
+      });
+      onClose();
+    } catch (saveError) { setError(friendlyError(saveError)); }
+    finally { setSaving(false); }
+  };
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Pressable style={styles.modalScrim} onPress={onClose}><Pressable style={styles.budgetEditorCard} onPress={() => undefined}>
+      <View style={styles.sheetHandle} /><Text style={styles.modalTitle}>{budget ? 'Editar orçamento' : 'Novo orçamento'}</Text><Text style={styles.modalSub}>Defina quanto pode ser gasto na categoria por mês.</Text>
+      {budget ? <View style={styles.budgetCategoryLocked}><Text style={styles.fieldLabel}>Categoria</Text><Text style={styles.budgetLockedValue}>{budget.parent_name ? `${budget.parent_name} · ${budget.category_name}` : budget.category_name}</Text></View> : <SelectField label="Categoria de despesa" value={categoryId} options={categories.map((item) => ({ value: String(item.id), label: item.parent_name ? `${item.parent_name} · ${item.name}` : item.name }))} placeholder="Escolha uma categoria" onChange={setCategoryId} />}
+      <Field label="Limite mensal (R$)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="0,00" />
+      <Text style={styles.fieldLabel}>Impacto no saldo projetado</Text><View style={styles.pillRow}><Pill label="Considerar" active={includeInProjection} onPress={() => setIncludeInProjection(true)} /><Pill label="Ignorar" active={!includeInProjection} onPress={() => setIncludeInProjection(false)} /></View>
+      {error ? <Text style={styles.loginError}>{error}</Text> : null}
+      <View style={styles.formButtons}><SecondaryButton label="Cancelar" onPress={onClose} disabled={saving} /><PrimaryButton label={budget ? 'Salvar alterações' : 'Criar orçamento'} loading={saving} onPress={() => { void save(); }} /></View>
+    </Pressable></Pressable>
+  </Modal>;
 }
 
 function TransactionForm({ data, areaId, loading, onSubmit, onCancel }: {
@@ -576,10 +745,13 @@ const styles = StyleSheet.create({
   statGrid: { flexDirection: 'row', gap: 11 }, statCard: { flex: 1, minHeight: 102, padding: 14, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, justifyContent: 'space-between' }, statCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 5 }, statLabel: { color: C.muted, fontSize: 11, fontWeight: '500', flexShrink: 1 }, statIcon: { width: 27, height: 27, borderRadius: 9, alignItems: 'center', justifyContent: 'center' }, statValue: { fontSize: 17, fontWeight: '700', marginTop: 10 },
   quickActions: { flexDirection: 'row', gap: 10 }, quickAction: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 68, paddingHorizontal: 11, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, quickIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#302b4d' }, quickTitle: { color: C.text, fontSize: 11, fontWeight: '700' }, quickSubtitle: { color: C.muted, fontSize: 9, marginTop: 3 },
   panel: { paddingHorizontal: 15, paddingVertical: 15, borderRadius: 17, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, panelHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }, panelTitle: { color: C.text, fontSize: 16, fontWeight: '700' }, panelSubtitle: { color: C.muted, fontSize: 11, marginTop: 3 },
-  transactionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.line }, transactionIcon: { width: 37, height: 37, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }, transactionCopy: { flex: 1, minWidth: 0 }, transactionName: { color: C.text, fontSize: 12, fontWeight: '600' }, transactionMeta: { color: C.muted, fontSize: 10, marginTop: 4 }, transactionAmount: { alignItems: 'flex-end', maxWidth: 120 }, transactionAmountText: { fontSize: 12, fontWeight: '700' }, pendingCaption: { color: '#e7bd6f', fontSize: 9, marginTop: 3 }, refreshHint: { color: C.faint, fontSize: 10, textAlign: 'center', marginTop: 2, marginBottom: 2 },
+  transactionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.line }, transactionIcon: { width: 37, height: 37, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }, transactionCopy: { flex: 1, minWidth: 0 }, transactionName: { color: C.text, fontSize: 12, fontWeight: '600' }, transactionMeta: { color: C.muted, fontSize: 10, marginTop: 4 }, transactionAmount: { alignItems: 'flex-end', maxWidth: 120 }, transactionAmountText: { color: C.text, fontSize: 12, fontWeight: '700' }, pendingCaption: { color: '#e7bd6f', fontSize: 9, marginTop: 3 }, refreshHint: { color: C.faint, fontSize: 10, textAlign: 'center', marginTop: 2, marginBottom: 2 },
   monthNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5 }, navCircle: { width: 40, height: 40, borderRadius: 14, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }, monthTitleWrap: { alignItems: 'center' }, monthTitle: { color: C.text, fontSize: 18, fontWeight: '700', marginTop: 4 }, periodBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#18352f' }, periodBadgeClosed: { backgroundColor: '#302b4d' }, periodDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.green }, periodDotClosed: { backgroundColor: C.purpleLight }, periodBadgeText: { color: C.green, fontSize: 9, fontWeight: '700' }, periodBadgeTextClosed: { color: C.purpleLight },
   monthSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', padding: 18, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, summaryLabel: { color: C.muted, fontSize: 11 }, summaryValue: { fontSize: 17, fontWeight: '700', marginTop: 6 }, summaryDivider: { width: 1, height: 35, backgroundColor: C.line }, monthListHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }, roundAdd: { width: 36, height: 36, borderRadius: 13, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center' },
+  projectedCard: { padding: 17, borderRadius: 17, backgroundColor: '#211d36', borderWidth: 1, borderColor: '#4c427e' }, projectedCardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, projectedLabel: { color: C.purpleLight, fontSize: 9, fontWeight: '800', letterSpacing: 1.1 }, projectedValue: { color: C.text, fontSize: 27, fontWeight: '800', marginTop: 6 }, projectedIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: '#302b4d', alignItems: 'center', justifyContent: 'center' }, projectedFoot: { flexDirection: 'row', alignItems: 'center', gap: 11, borderTopWidth: 1, borderTopColor: '#40385f', marginTop: 13, paddingTop: 11 }, projectedFootText: { color: '#c7c1e8', fontSize: 10, flex: 1 },
   monthFilters: { flexDirection: 'row', gap: 8, paddingRight: 4 }, monthFilter: { minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }, monthFilterActive: { borderColor: '#51469b', backgroundColor: '#292540' }, monthFilterText: { color: C.muted, fontSize: 11, fontWeight: '600' }, monthFilterTextActive: { color: C.purpleLight }, monthFilterCount: { minWidth: 17, textAlign: 'center', color: C.faint, fontSize: 9, fontWeight: '700' }, monthFilterCountActive: { color: C.purpleLight }, dayGroup: { gap: 7 }, dayGroupHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingHorizontal: 2, paddingTop: 3 }, dayGroupCopy: { flex: 1 }, dayGroupDate: { color: C.text, fontSize: 12, fontWeight: '700' }, dayGroupCount: { color: C.muted, fontSize: 10, marginTop: 3 }, dayGroupTotals: { alignItems: 'flex-end', gap: 2 }, dayGroupTotal: { fontSize: 10, fontWeight: '700' }, dayGroupPanel: { paddingVertical: 4 },
+  monthSection: { gap: 10 }, budgetSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, cardMonthRow: { minHeight: 67, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 13, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, cardMonthIcon: { width: 39, height: 39, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#302b4d' }, cardMonthCopy: { flex: 1, minWidth: 0 }, cardMonthAmount: { flexDirection: 'row', alignItems: 'center', gap: 4 }, backToMonth: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 3 }, backToMonthText: { color: C.purpleLight, fontSize: 12, fontWeight: '700' }, cardDetailSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', padding: 18, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, cardDetailTotal: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 5 }, cardDetailPending: { fontSize: 15, fontWeight: '700', marginTop: 7 },
+  budgetCard: { padding: 14, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, budgetCardExceeded: { borderColor: '#694047' }, budgetCardReleased: { opacity: 0.82 }, budgetCardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 }, budgetCardTitle: { flex: 1, minWidth: 0 }, budgetRemaining: { color: C.green, fontSize: 11, fontWeight: '700', flexShrink: 0 }, budgetProgressTrack: { height: 7, marginTop: 12, marginBottom: 10, overflow: 'hidden', borderRadius: 5, backgroundColor: '#292f3c' }, budgetProgressFill: { height: 7, borderRadius: 5, backgroundColor: C.purple }, budgetProgressExceeded: { backgroundColor: C.red }, budgetStats: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 7 }, budgetStat: { color: C.muted, fontSize: 9 }, budgetStatValue: { color: C.text, fontSize: 10, fontWeight: '700' }, budgetCardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 11, paddingTop: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line }, budgetProjectionHint: { color: C.purpleLight, fontSize: 9, fontWeight: '600' }, budgetActions: { flexDirection: 'row', gap: 17, paddingHorizontal: 4 }, budgetEditorCard: { width: '100%', maxWidth: 500, maxHeight: '85%', marginTop: 'auto', backgroundColor: C.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: C.line, padding: 20, paddingBottom: 28 }, budgetCategoryLocked: { marginBottom: 10 }, budgetLockedValue: { minHeight: 48, paddingHorizontal: 13, paddingVertical: 15, borderRadius: 12, borderWidth: 1, borderColor: C.line, backgroundColor: C.raised, color: C.text, fontSize: 13 },
   emptyState: { alignItems: 'center', paddingVertical: 30, paddingHorizontal: 18 }, emptyIcon: { width: 42, height: 42, borderRadius: 15, backgroundColor: '#302b4d', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }, emptyTitle: { color: C.text, fontSize: 13, fontWeight: '700' }, emptyText: { color: C.muted, fontSize: 11, textAlign: 'center', lineHeight: 17, marginTop: 6 }, emptyAction: { color: C.purpleLight, fontSize: 12, fontWeight: '700', marginTop: 13 },
   tabBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 8, backgroundColor: C.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line }, tabButton: { flex: 1, height: 48, alignItems: 'center', justifyContent: 'center', gap: 3 }, tabLabel: { color: C.muted, fontSize: 9, fontWeight: '600' }, activeText: { color: C.purpleLight }, addTab: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: -19, gap: 1 }, addCircle: { width: 49, height: 49, borderRadius: 25, backgroundColor: C.purple, borderWidth: 4, borderColor: C.bg, alignItems: 'center', justifyContent: 'center' },
   loginRoot: { flex: 1, backgroundColor: C.bg }, loginScroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 29, paddingVertical: 34 }, logoMark: { width: 53, height: 53, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: C.purple }, logoMarkText: { color: 'white', fontSize: 28, fontWeight: '900' }, loginBrand: { color: C.text, fontSize: 24, fontWeight: '800', marginTop: 14 }, loginBrandAccent: { color: C.purpleLight }, loginHeading: { color: C.text, fontWeight: '800', fontSize: 30, lineHeight: 37, marginTop: 38, letterSpacing: -0.8 }, loginSubheading: { color: C.muted, fontSize: 14, marginTop: 10 }, loginForm: { gap: 6, marginTop: 28 }, loginError: { color: '#ffaaa2', fontSize: 12, paddingVertical: 8 }, loginFoot: { color: C.faint, textAlign: 'center', fontSize: 11, marginTop: 27 },
