@@ -323,7 +323,6 @@ function MonthScreen({ data, cursor, loading, cards, categories, canManageBudget
   onDeleteBudget: (budgetId: number) => Promise<void>;
   onPrevious: () => void; onNext: () => void; onRefresh: () => void; onCreate: () => void;
 }) {
-  const [filter, setFilter] = useState<'all' | TransactionType>('all');
   const [selectedCardId, setSelectedCardId] = useState<number | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<BudgetRow | null>(null);
@@ -342,31 +341,18 @@ function MonthScreen({ data, cursor, loading, cards, categories, canManageBudget
     return [...groups.entries()].map(([id, group]) => ({ id, card: cards.find((item) => item.id === id), ...group }));
   }, [data?.transactions, cards]);
   const cardDetail = cardGroups.find((group) => group.id === selectedCardId);
-  const transactions = useMemo(() => {
-    const filtered = (data?.transactions ?? []).filter((item) => filter === 'all' || item.transaction_type === filter);
-    return filtered.sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
-  }, [data?.transactions, filter]);
-  const dayGroups = useMemo(() => {
-    const groups = new Map<string, { items: Transaction[]; income: number; expenses: number }>();
-    for (const item of transactions.filter((item) => item.card_id == null)) {
-      const group = groups.get(item.transaction_date) ?? { items: [], income: 0, expenses: 0 };
-      group.items.push(item);
-      if (item.transaction_type === 'income') group.income += Number(item.amount);
-      if (item.transaction_type === 'expense') group.expenses += Number(item.amount);
-      groups.set(item.transaction_date, group);
-    }
-    return [...groups.entries()].map(([date, group]) => ({ date, ...group }));
-  }, [transactions]);
-  const counts = useMemo(() => ({
-    all: data?.transactions.length ?? 0,
-    income: data?.transactions.filter((item) => item.transaction_type === 'income').length ?? 0,
-    expense: data?.transactions.filter((item) => item.transaction_type === 'expense').length ?? 0,
-    transfer: data?.transactions.filter((item) => item.transaction_type === 'transfer').length ?? 0,
-  }), [data?.transactions]);
-  const filters: { key: 'all' | TransactionType; label: string }[] = [
-    { key: 'all', label: 'Tudo' }, { key: 'expense', label: 'Saídas' },
-    { key: 'income', label: 'Entradas' }, { key: 'transfer', label: 'Transf.' },
-  ];
+  const incomeItems = (data?.transactions ?? []).filter((item) => item.transaction_type === 'income')
+    .sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+  const expenseItems = (data?.transactions ?? []).filter((item) => item.transaction_type === 'expense' && item.card_id == null)
+    .sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+  const transferItems = (data?.transactions ?? []).filter((item) => item.transaction_type === 'transfer')
+    .sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+  const incomePaid = incomeItems.filter((item) => item.status === 'paid').reduce((sum, item) => sum + Number(item.amount), 0);
+  const incomePending = incomeItems.filter((item) => item.status === 'pending').reduce((sum, item) => sum + Number(item.amount), 0);
+  const expensePaid = expenseItems.filter((item) => item.status === 'paid').reduce((sum, item) => sum + Number(item.amount), 0)
+    + cardGroups.reduce((sum, group) => sum + group.paid, 0);
+  const expensePending = expenseItems.filter((item) => item.status === 'pending').reduce((sum, item) => sum + Number(item.amount), 0)
+    + cardGroups.reduce((sum, group) => sum + group.pending, 0);
   const openBudgetEditor = (budget: BudgetRow | null = null) => {
     setEditingBudget(budget);
     setEditorOpen(true);
@@ -393,43 +379,33 @@ function MonthScreen({ data, cursor, loading, cards, categories, canManageBudget
           <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>COMPETÊNCIA</Text><Text style={styles.monthTitle}>{monthName(cursor.year, cursor.month)}</Text><View style={[styles.periodBadge, data?.is_closed && styles.periodBadgeClosed]}><View style={[styles.periodDot, data?.is_closed && styles.periodDotClosed]} /><Text style={[styles.periodBadgeText, data?.is_closed && styles.periodBadgeTextClosed]}>{data?.is_closed ? 'Mês fechado' : 'Mês aberto'}</Text></View></View>
           <Pressable style={styles.navCircle} onPress={onNext} accessibilityLabel="Próximo mês"><Feather name="chevron-right" size={21} color={C.text} /></Pressable>
         </View>
-        <View style={styles.projectedCard}>
-          <View style={styles.projectedCardHeader}><View><Text style={styles.projectedLabel}>SALDO PROJETADO</Text><Text style={[styles.projectedValue, Number(data?.projected_balance ?? 0) < 0 && { color: C.red }]}>{money(data?.projected_balance)}</Text></View><View style={styles.projectedIcon}><Feather name="trending-up" size={19} color={C.purpleLight} /></View></View>
-          <View style={styles.projectedFoot}><Text style={styles.projectedFootText}>Saldo inicial {money(data?.opening_balance)}</Text><View style={styles.summaryDivider} /><Text style={styles.projectedFootText}>Reserva {money(data?.budget_projection_remaining)}</Text></View>
+        <View style={styles.balancePair}>
+          <View style={[styles.balanceTile, styles.balanceTileActual]}><Text style={styles.balanceTileLabel}>SALDO ATUAL</Text><Text style={styles.balanceTileValue} numberOfLines={1} adjustsFontSizeToFit>{money(data?.closing_balance)}</Text><Text style={styles.balanceTileHint}>Confirmado</Text></View>
+          <View style={[styles.balanceTile, styles.balanceTileProjected]}><View style={styles.balanceTileHeading}><Text style={styles.balanceTileLabel}>SALDO PROJETADO</Text><Feather name="trending-up" size={15} color={C.purpleLight} /></View><Text style={[styles.balanceTileValue, Number(data?.projected_balance ?? 0) < 0 && { color: C.red }]} numberOfLines={1} adjustsFontSizeToFit>{money(data?.projected_balance)}</Text><Text style={styles.balanceTileHint}>Inclui pendências e reserva</Text></View>
         </View>
-        <View style={styles.monthSummary}>
-          <View><Text style={styles.summaryLabel}>Entradas</Text><Text style={[styles.summaryValue, { color: C.green }]}>{money(data?.income)}</Text></View>
-          <View style={styles.summaryDivider} />
-          <View><Text style={styles.summaryLabel}>Saídas</Text><Text style={[styles.summaryValue, { color: C.red }]}>{money(data?.expenses)}</Text></View>
+        <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Movimentações do mês</Text><Text style={styles.panelSubtitle}>{data?.transactions.length ?? 0} lançamentos</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
+        <View style={styles.ledgerSection}>
+          <View style={styles.ledgerHeader}><View style={styles.ledgerTitleGroup}><View style={[styles.ledgerIcon, { backgroundColor: '#17382e' }]}><Feather name="arrow-down-left" size={18} color={C.green} /></View><View><Text style={styles.eyebrow}>ENTRADAS</Text><Text style={styles.panelTitle}>Receitas do mês</Text></View></View><Text style={[styles.ledgerTotal, { color: C.green }]}>{money(data?.income)}</Text></View>
+          <View style={styles.panel}>{incomeItems.length ? incomeItems.map((item) => <TransactionRow key={item.id} item={item} showDate />) : <EmptyState title="Nenhuma entrada" subtitle="As receitas deste mês aparecerão aqui." />}</View>
+          <View style={styles.ledgerFooter}><Text style={styles.ledgerFooterText}>Confirmado <Text style={styles.ledgerFooterValue}>{money(incomePaid)}</Text></Text><Text style={styles.ledgerFooterText}>Pendente <Text style={styles.ledgerFooterValue}>{money(incomePending)}</Text></Text></View>
         </View>
-        <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos</Text><Text style={styles.panelSubtitle}>{transactions.length} de {data?.transactions.length ?? 0} neste mês</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthFilters}>
-          {filters.map((item) => <Pressable key={item.key} accessibilityRole="button" accessibilityState={{ selected: filter === item.key }} onPress={() => setFilter(item.key)} style={[styles.monthFilter, filter === item.key && styles.monthFilterActive]}><Text style={[styles.monthFilterText, filter === item.key && styles.monthFilterTextActive]}>{item.label}</Text><Text style={[styles.monthFilterCount, filter === item.key && styles.monthFilterCountActive]}>{counts[item.key]}</Text></Pressable>)}
-        </ScrollView>
-        {dayGroups.map((group) => {
-          const date = new Date(`${group.date}T12:00:00`);
-          const label = capitalizeFirst(date.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }));
-          return <View key={group.date} style={styles.dayGroup}>
-            <View style={styles.dayGroupHeading}>
-              <View style={styles.dayGroupCopy}><Text style={styles.dayGroupDate}>{label}</Text><Text style={styles.dayGroupCount}>{group.items.length} {group.items.length === 1 ? 'lançamento' : 'lançamentos'}</Text></View>
-              <View style={styles.dayGroupTotals}>
-                {group.income > 0 && <Text style={[styles.dayGroupTotal, { color: C.green }]}>+ {money(group.income)}</Text>}
-                {group.expenses > 0 && <Text style={[styles.dayGroupTotal, { color: C.red }]}>− {money(group.expenses)}</Text>}
-              </View>
-            </View>
-            <View style={[styles.panel, styles.dayGroupPanel]}>{group.items.map((item) => <TransactionRow key={item.id} item={item} />)}</View>
-          </View>;
-        })}
-        {(filter === 'all' || filter === 'expense') && cardGroups.length > 0 && <View style={styles.monthSection}>
-          <View><Text style={styles.panelTitle}>Compras no cartão</Text><Text style={styles.panelSubtitle}>Toque em um cartão para ver só os lançamentos dele</Text></View>
-          {cardGroups.map((group) => <Pressable key={group.id} style={styles.cardMonthRow} onPress={() => setSelectedCardId(group.id)} accessibilityRole="button" accessibilityLabel={`Ver lançamentos do cartão ${group.card?.name ?? group.id}`}>
-            <View style={styles.cardMonthIcon}><Feather name="credit-card" size={18} color={C.purpleLight} /></View>
-            <View style={styles.cardMonthCopy}><Text style={styles.transactionName} numberOfLines={1}>{group.card?.name ?? 'Cartão'}</Text><Text style={styles.transactionMeta}>{group.items.length} {group.items.length === 1 ? 'compra' : 'compras'} · {group.pending ? `${money(group.pending)} pendente` : 'sem pendências'}</Text></View>
-            <View style={styles.cardMonthAmount}><Text style={styles.transactionAmountText}>{money(group.total)}</Text><Feather name="chevron-right" size={17} color={C.muted} /></View>
-          </Pressable>)}
+        <View style={styles.ledgerSection}>
+          <View style={styles.ledgerHeader}><View style={styles.ledgerTitleGroup}><View style={[styles.ledgerIcon, { backgroundColor: '#3a2026' }]}><Feather name="arrow-up-right" size={18} color={C.red} /></View><View><Text style={styles.eyebrow}>SAÍDAS</Text><Text style={styles.panelTitle}>Contas e compras</Text></View></View><Text style={[styles.ledgerTotal, { color: C.red }]}>{money(data?.expenses)}</Text></View>
+          <View style={styles.panel}>
+            {expenseItems.map((item) => <TransactionRow key={item.id} item={item} showDate />)}
+            {cardGroups.map((group) => <Pressable key={group.id} style={styles.ledgerCardRow} onPress={() => setSelectedCardId(group.id)} accessibilityRole="button" accessibilityLabel={`Ver lançamentos do cartão ${group.card?.name ?? group.id}`}>
+              <View style={styles.cardMonthIcon}><Feather name="credit-card" size={18} color={C.purpleLight} /></View>
+              <View style={styles.cardMonthCopy}><Text style={styles.transactionName} numberOfLines={1}>{group.card?.name ?? 'Cartão'}</Text><Text style={styles.transactionMeta}>{group.items.length} {group.items.length === 1 ? 'compra' : 'compras'} · {group.pending ? `${money(group.pending)} pendente` : 'sem pendências'}</Text></View>
+              <View style={styles.cardMonthAmount}><Text style={[styles.transactionAmountText, { color: C.red }]}>{money(group.total)}</Text><Feather name="chevron-right" size={17} color={C.muted} /></View>
+            </Pressable>)}
+            {!expenseItems.length && !cardGroups.length && <EmptyState title="Nenhuma saída" subtitle="As despesas deste mês aparecerão aqui." />}
+          </View>
+          <View style={styles.ledgerFooter}><Text style={styles.ledgerFooterText}>Pago <Text style={styles.ledgerFooterValue}>{money(expensePaid)}</Text></Text><Text style={styles.ledgerFooterText}>Pendente <Text style={styles.ledgerFooterValue}>{money(expensePending)}</Text></Text></View>
+        </View>
+        {!!transferItems.length && <View style={styles.ledgerSection}>
+          <View style={styles.ledgerHeader}><View style={styles.ledgerTitleGroup}><View style={styles.ledgerIcon}><Feather name="repeat" size={18} color={C.blue} /></View><View><Text style={styles.eyebrow}>MOVIMENTAÇÃO ENTRE CONTAS</Text><Text style={styles.panelTitle}>Transferências</Text></View></View></View>
+          <View style={styles.panel}>{transferItems.map((item) => <TransactionRow key={item.id} item={item} showDate />)}</View>
         </View>}
-        {!dayGroups.length && !(filter === 'all' || filter === 'expense') && <View style={styles.panel}><EmptyState title="Nada neste filtro" subtitle="Escolha outro tipo para ver os lançamentos." /></View>}
-        {!dayGroups.length && (filter === 'all' || filter === 'expense') && !cardGroups.length && <View style={styles.panel}><EmptyState title={data?.transactions.length ? 'Nada neste filtro' : 'Nenhum lançamento'} subtitle={data?.transactions.length ? 'Escolha outro tipo para ver os lançamentos.' : 'Este mês ainda não tem movimentações.'} action={data?.transactions.length ? undefined : 'Adicionar lançamento'} onAction={data?.transactions.length ? undefined : onCreate} /></View>}
         <View style={styles.monthSection}>
           <View style={styles.budgetSectionHeader}><View><Text style={styles.panelTitle}>Orçamento</Text><Text style={styles.panelSubtitle}>{data?.budgets.length ?? 0} {data?.budgets.length === 1 ? 'limite para este mês' : 'limites para este mês'}</Text></View>{canManageBudgets && <Pressable style={styles.roundAdd} onPress={() => openBudgetEditor()} accessibilityLabel="Criar orçamento"><Feather name="plus" size={18} color="white" /></Pressable>}</View>
           {data?.budgets.length ? data.budgets.map((budget) => <BudgetCard key={budget.id} budget={budget} canManage={canManageBudgets} onEdit={() => openBudgetEditor(budget)} onDelete={() => confirmDeleteBudget(budget)} />) : <View style={styles.panel}><EmptyState title="Nenhum orçamento definido" subtitle={canManageBudgets ? 'Defina limites por categoria e acompanhe o impacto no saldo projetado.' : 'Ainda não há limites para esta área financeira.'} action={canManageBudgets ? 'Criar orçamento' : undefined} onAction={canManageBudgets ? () => openBudgetEditor() : undefined} /></View>}
@@ -749,6 +725,8 @@ const styles = StyleSheet.create({
   monthNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5 }, navCircle: { width: 40, height: 40, borderRadius: 14, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }, monthTitleWrap: { alignItems: 'center' }, monthTitle: { color: C.text, fontSize: 18, fontWeight: '700', marginTop: 4 }, periodBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#18352f' }, periodBadgeClosed: { backgroundColor: '#302b4d' }, periodDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.green }, periodDotClosed: { backgroundColor: C.purpleLight }, periodBadgeText: { color: C.green, fontSize: 9, fontWeight: '700' }, periodBadgeTextClosed: { color: C.purpleLight },
   monthSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', padding: 18, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, summaryLabel: { color: C.muted, fontSize: 11 }, summaryValue: { fontSize: 17, fontWeight: '700', marginTop: 6 }, summaryDivider: { width: 1, height: 35, backgroundColor: C.line }, monthListHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }, roundAdd: { width: 36, height: 36, borderRadius: 13, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center' },
   projectedCard: { padding: 17, borderRadius: 17, backgroundColor: '#211d36', borderWidth: 1, borderColor: '#4c427e' }, projectedCardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, projectedLabel: { color: C.purpleLight, fontSize: 9, fontWeight: '800', letterSpacing: 1.1 }, projectedValue: { color: C.text, fontSize: 27, fontWeight: '800', marginTop: 6 }, projectedIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: '#302b4d', alignItems: 'center', justifyContent: 'center' }, projectedFoot: { flexDirection: 'row', alignItems: 'center', gap: 11, borderTopWidth: 1, borderTopColor: '#40385f', marginTop: 13, paddingTop: 11 }, projectedFootText: { color: '#c7c1e8', fontSize: 10, flex: 1 },
+  balancePair: { flexDirection: 'row', gap: 10 }, balanceTile: { flex: 1, minWidth: 0, minHeight: 107, justifyContent: 'space-between', padding: 13, borderWidth: 1, borderRadius: 16 }, balanceTileActual: { backgroundColor: C.surface, borderColor: C.line }, balanceTileProjected: { backgroundColor: '#211d36', borderColor: '#4c427e' }, balanceTileHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 }, balanceTileLabel: { color: C.purpleLight, fontSize: 8, fontWeight: '800', letterSpacing: 0.7 }, balanceTileValue: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 6 }, balanceTileHint: { color: C.muted, fontSize: 9, marginTop: 5 },
+  ledgerSection: { gap: 8 }, ledgerHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }, ledgerTitleGroup: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }, ledgerIcon: { width: 35, height: 35, borderRadius: 11, backgroundColor: C.raised, alignItems: 'center', justifyContent: 'center' }, ledgerTotal: { fontSize: 15, fontWeight: '800' }, ledgerFooter: { flexDirection: 'row', justifyContent: 'flex-end', gap: 18, paddingHorizontal: 4 }, ledgerFooterText: { color: C.muted, fontSize: 10 }, ledgerFooterValue: { color: C.text, fontWeight: '700' }, ledgerCardRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.line },
   monthFilters: { flexDirection: 'row', gap: 8, paddingRight: 4 }, monthFilter: { minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }, monthFilterActive: { borderColor: '#51469b', backgroundColor: '#292540' }, monthFilterText: { color: C.muted, fontSize: 11, fontWeight: '600' }, monthFilterTextActive: { color: C.purpleLight }, monthFilterCount: { minWidth: 17, textAlign: 'center', color: C.faint, fontSize: 9, fontWeight: '700' }, monthFilterCountActive: { color: C.purpleLight }, dayGroup: { gap: 7 }, dayGroupHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingHorizontal: 2, paddingTop: 3 }, dayGroupCopy: { flex: 1 }, dayGroupDate: { color: C.text, fontSize: 12, fontWeight: '700' }, dayGroupCount: { color: C.muted, fontSize: 10, marginTop: 3 }, dayGroupTotals: { alignItems: 'flex-end', gap: 2 }, dayGroupTotal: { fontSize: 10, fontWeight: '700' }, dayGroupPanel: { paddingVertical: 4 },
   monthSection: { gap: 10 }, budgetSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, cardMonthRow: { minHeight: 67, flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 13, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, cardMonthIcon: { width: 39, height: 39, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: '#302b4d' }, cardMonthCopy: { flex: 1, minWidth: 0 }, cardMonthAmount: { flexDirection: 'row', alignItems: 'center', gap: 4 }, backToMonth: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 3 }, backToMonthText: { color: C.purpleLight, fontSize: 12, fontWeight: '700' }, cardDetailSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', padding: 18, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, cardDetailTotal: { color: C.text, fontSize: 20, fontWeight: '800', marginTop: 5 }, cardDetailPending: { fontSize: 15, fontWeight: '700', marginTop: 7 },
   budgetCard: { padding: 14, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, budgetCardExceeded: { borderColor: '#694047' }, budgetCardReleased: { opacity: 0.82 }, budgetCardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 }, budgetCardTitle: { flex: 1, minWidth: 0 }, budgetRemaining: { color: C.green, fontSize: 11, fontWeight: '700', flexShrink: 0 }, budgetProgressTrack: { height: 7, marginTop: 12, marginBottom: 10, overflow: 'hidden', borderRadius: 5, backgroundColor: '#292f3c' }, budgetProgressFill: { height: 7, borderRadius: 5, backgroundColor: C.purple }, budgetProgressExceeded: { backgroundColor: C.red }, budgetStats: { flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', gap: 7 }, budgetStat: { color: C.muted, fontSize: 9 }, budgetStatValue: { color: C.text, fontSize: 10, fontWeight: '700' }, budgetCardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 11, paddingTop: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line }, budgetProjectionHint: { color: C.purpleLight, fontSize: 9, fontWeight: '600' }, budgetActions: { flexDirection: 'row', gap: 17, paddingHorizontal: 4 }, budgetEditorCard: { width: '100%', maxWidth: 500, maxHeight: '85%', marginTop: 'auto', backgroundColor: C.surface, borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: C.line, padding: 20, paddingBottom: 28 }, budgetCategoryLocked: { marginBottom: 10 }, budgetLockedValue: { minHeight: 48, paddingHorizontal: 13, paddingVertical: 15, borderRadius: 12, borderWidth: 1, borderColor: C.line, backgroundColor: C.raised, color: C.text, fontSize: 13 },
