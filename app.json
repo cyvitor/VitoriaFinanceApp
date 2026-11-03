@@ -5,11 +5,11 @@
     "version": "1.0.0",
     "scheme": "vitoriafinance",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/vitoria-finance-face.png",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/icon.png",
+      "image": "./assets/vitoria-finance-face.png",
       "resizeMode": "contain",
       "backgroundColor": "#11141c"
     },
@@ -21,7 +21,7 @@
       "package": "com.vitoriafinance.app",
       "adaptiveIcon": {
         "backgroundColor": "#191d27",
-        "foregroundImage": "./assets/icon.png"
+        "foregroundImage": "./assets/vitoria-finance-face.png"
       },
       "predictiveBackGestureEnabled": true
     },

@@ -67,8 +67,9 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
 const money = (value: string | number | undefined) => new Intl.NumberFormat('pt-BR', {
   style: 'currency', currency: 'BRL',
 }).format(Number(value || 0));
-const monthName = (year: number, month: number) => new Date(year, month - 1, 1)
-  .toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+const capitalizeFirst = (value: string) => value ? value[0].toLocaleUpperCase('pt-BR') + value.slice(1) : value;
+const monthName = (year: number, month: number) => capitalizeFirst(new Date(year, month - 1, 1)
+  .toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }));
 const todayIso = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -289,11 +290,38 @@ function MonthScreen({ data, cursor, loading, onPrevious, onNext, onRefresh, onC
   data: MonthData | null; cursor: { year: number; month: number }; loading: boolean;
   onPrevious: () => void; onNext: () => void; onRefresh: () => void; onCreate: () => void;
 }) {
+  const [filter, setFilter] = useState<'all' | TransactionType>('all');
+  const transactions = useMemo(() => {
+    const filtered = (data?.transactions ?? []).filter((item) => filter === 'all' || item.transaction_type === filter);
+    return filtered.sort((a, b) => b.transaction_date.localeCompare(a.transaction_date) || b.id - a.id);
+  }, [data?.transactions, filter]);
+  const dayGroups = useMemo(() => {
+    const groups = new Map<string, { items: Transaction[]; income: number; expenses: number }>();
+    for (const item of transactions) {
+      const group = groups.get(item.transaction_date) ?? { items: [], income: 0, expenses: 0 };
+      group.items.push(item);
+      if (item.transaction_type === 'income') group.income += Number(item.amount);
+      if (item.transaction_type === 'expense') group.expenses += Number(item.amount);
+      groups.set(item.transaction_date, group);
+    }
+    return [...groups.entries()].map(([date, group]) => ({ date, ...group }));
+  }, [transactions]);
+  const counts = useMemo(() => ({
+    all: data?.transactions.length ?? 0,
+    income: data?.transactions.filter((item) => item.transaction_type === 'income').length ?? 0,
+    expense: data?.transactions.filter((item) => item.transaction_type === 'expense').length ?? 0,
+    transfer: data?.transactions.filter((item) => item.transaction_type === 'transfer').length ?? 0,
+  }), [data?.transactions]);
+  const filters: { key: 'all' | TransactionType; label: string }[] = [
+    { key: 'all', label: 'Tudo' }, { key: 'expense', label: 'Saídas' },
+    { key: 'income', label: 'Entradas' }, { key: 'transfer', label: 'Transf.' },
+  ];
+
   return (
     <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} tintColor={C.purpleLight} colors={[C.purple]} />}>
       <View style={styles.monthNav}>
         <Pressable style={styles.navCircle} onPress={onPrevious} accessibilityLabel="Mês anterior"><Feather name="chevron-left" size={21} color={C.text} /></Pressable>
-        <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>COMPETÊNCIA</Text><Text style={styles.monthTitle}>{monthName(cursor.year, cursor.month)}</Text></View>
+        <View style={styles.monthTitleWrap}><Text style={styles.eyebrow}>COMPETÊNCIA</Text><Text style={styles.monthTitle}>{monthName(cursor.year, cursor.month)}</Text><View style={[styles.periodBadge, data?.is_closed && styles.periodBadgeClosed]}><View style={[styles.periodDot, data?.is_closed && styles.periodDotClosed]} /><Text style={[styles.periodBadgeText, data?.is_closed && styles.periodBadgeTextClosed]}>{data?.is_closed ? 'Mês fechado' : 'Mês aberto'}</Text></View></View>
         <Pressable style={styles.navCircle} onPress={onNext} accessibilityLabel="Próximo mês"><Feather name="chevron-right" size={21} color={C.text} /></Pressable>
       </View>
       <View style={styles.monthSummary}>
@@ -301,10 +329,24 @@ function MonthScreen({ data, cursor, loading, onPrevious, onNext, onRefresh, onC
         <View style={styles.summaryDivider} />
         <View><Text style={styles.summaryLabel}>Saídas</Text><Text style={[styles.summaryValue, { color: C.red }]}>{money(data?.expenses)}</Text></View>
       </View>
-      <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos</Text><Text style={styles.panelSubtitle}>{data?.transactions.length ?? 0} neste mês{data?.is_closed ? ' · mês fechado' : ''}</Text></View><Pressable style={styles.roundAdd} onPress={onCreate}><Feather name="plus" size={18} color="white" /></Pressable></View>
-      <View style={styles.panel}>
-        {data?.transactions.length ? data.transactions.map((item) => <TransactionRow key={item.id} item={item} showDate />) : <EmptyState title="Nenhum lançamento" subtitle="Este mês ainda não tem movimentações." action="Adicionar lançamento" onAction={onCreate} />}
-      </View>
+      <View style={styles.monthListHeading}><View><Text style={styles.panelTitle}>Lançamentos</Text><Text style={styles.panelSubtitle}>{transactions.length} de {data?.transactions.length ?? 0} neste mês</Text></View><Pressable style={styles.roundAdd} onPress={onCreate} accessibilityLabel="Adicionar lançamento"><Feather name="plus" size={18} color="white" /></Pressable></View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.monthFilters}>
+        {filters.map((item) => <Pressable key={item.key} accessibilityRole="button" accessibilityState={{ selected: filter === item.key }} onPress={() => setFilter(item.key)} style={[styles.monthFilter, filter === item.key && styles.monthFilterActive]}><Text style={[styles.monthFilterText, filter === item.key && styles.monthFilterTextActive]}>{item.label}</Text><Text style={[styles.monthFilterCount, filter === item.key && styles.monthFilterCountActive]}>{counts[item.key]}</Text></Pressable>)}
+      </ScrollView>
+      {dayGroups.length ? dayGroups.map((group) => {
+        const date = new Date(`${group.date}T12:00:00`);
+        const label = capitalizeFirst(date.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }));
+        return <View key={group.date} style={styles.dayGroup}>
+          <View style={styles.dayGroupHeading}>
+            <View style={styles.dayGroupCopy}><Text style={styles.dayGroupDate}>{label}</Text><Text style={styles.dayGroupCount}>{group.items.length} {group.items.length === 1 ? 'lançamento' : 'lançamentos'}</Text></View>
+            <View style={styles.dayGroupTotals}>
+              {group.income > 0 && <Text style={[styles.dayGroupTotal, { color: C.green }]}>+ {money(group.income)}</Text>}
+              {group.expenses > 0 && <Text style={[styles.dayGroupTotal, { color: C.red }]}>− {money(group.expenses)}</Text>}
+            </View>
+          </View>
+          <View style={[styles.panel, styles.dayGroupPanel]}>{group.items.map((item) => <TransactionRow key={item.id} item={item} />)}</View>
+        </View>;
+      }) : <View style={styles.panel}><EmptyState title={data?.transactions.length ? 'Nada neste filtro' : 'Nenhum lançamento'} subtitle={data?.transactions.length ? 'Escolha outro tipo para ver os lançamentos.' : 'Este mês ainda não tem movimentações.'} action={data?.transactions.length ? undefined : 'Adicionar lançamento'} onAction={data?.transactions.length ? undefined : onCreate} /></View>}
     </ScrollView>
   );
 }
@@ -535,8 +577,9 @@ const styles = StyleSheet.create({
   quickActions: { flexDirection: 'row', gap: 10 }, quickAction: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 68, paddingHorizontal: 11, borderWidth: 1, borderColor: C.line, borderRadius: 15, backgroundColor: C.surface }, quickIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#302b4d' }, quickTitle: { color: C.text, fontSize: 11, fontWeight: '700' }, quickSubtitle: { color: C.muted, fontSize: 9, marginTop: 3 },
   panel: { paddingHorizontal: 15, paddingVertical: 15, borderRadius: 17, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, panelHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }, panelTitle: { color: C.text, fontSize: 16, fontWeight: '700' }, panelSubtitle: { color: C.muted, fontSize: 11, marginTop: 3 },
   transactionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.line }, transactionIcon: { width: 37, height: 37, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }, transactionCopy: { flex: 1, minWidth: 0 }, transactionName: { color: C.text, fontSize: 12, fontWeight: '600' }, transactionMeta: { color: C.muted, fontSize: 10, marginTop: 4 }, transactionAmount: { alignItems: 'flex-end', maxWidth: 120 }, transactionAmountText: { fontSize: 12, fontWeight: '700' }, pendingCaption: { color: '#e7bd6f', fontSize: 9, marginTop: 3 }, refreshHint: { color: C.faint, fontSize: 10, textAlign: 'center', marginTop: 2, marginBottom: 2 },
-  monthNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5 }, navCircle: { width: 40, height: 40, borderRadius: 14, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }, monthTitleWrap: { alignItems: 'center' }, monthTitle: { color: C.text, fontSize: 18, fontWeight: '700', textTransform: 'capitalize', marginTop: 4 },
+  monthNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5 }, navCircle: { width: 40, height: 40, borderRadius: 14, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }, monthTitleWrap: { alignItems: 'center' }, monthTitle: { color: C.text, fontSize: 18, fontWeight: '700', marginTop: 4 }, periodBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#18352f' }, periodBadgeClosed: { backgroundColor: '#302b4d' }, periodDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.green }, periodDotClosed: { backgroundColor: C.purpleLight }, periodBadgeText: { color: C.green, fontSize: 9, fontWeight: '700' }, periodBadgeTextClosed: { color: C.purpleLight },
   monthSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', padding: 18, borderRadius: 16, backgroundColor: C.surface, borderWidth: 1, borderColor: C.line }, summaryLabel: { color: C.muted, fontSize: 11 }, summaryValue: { fontSize: 17, fontWeight: '700', marginTop: 6 }, summaryDivider: { width: 1, height: 35, backgroundColor: C.line }, monthListHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }, roundAdd: { width: 36, height: 36, borderRadius: 13, backgroundColor: C.purple, alignItems: 'center', justifyContent: 'center' },
+  monthFilters: { flexDirection: 'row', gap: 8, paddingRight: 4 }, monthFilter: { minHeight: 38, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface }, monthFilterActive: { borderColor: '#51469b', backgroundColor: '#292540' }, monthFilterText: { color: C.muted, fontSize: 11, fontWeight: '600' }, monthFilterTextActive: { color: C.purpleLight }, monthFilterCount: { minWidth: 17, textAlign: 'center', color: C.faint, fontSize: 9, fontWeight: '700' }, monthFilterCountActive: { color: C.purpleLight }, dayGroup: { gap: 7 }, dayGroupHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingHorizontal: 2, paddingTop: 3 }, dayGroupCopy: { flex: 1 }, dayGroupDate: { color: C.text, fontSize: 12, fontWeight: '700' }, dayGroupCount: { color: C.muted, fontSize: 10, marginTop: 3 }, dayGroupTotals: { alignItems: 'flex-end', gap: 2 }, dayGroupTotal: { fontSize: 10, fontWeight: '700' }, dayGroupPanel: { paddingVertical: 4 },
   emptyState: { alignItems: 'center', paddingVertical: 30, paddingHorizontal: 18 }, emptyIcon: { width: 42, height: 42, borderRadius: 15, backgroundColor: '#302b4d', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }, emptyTitle: { color: C.text, fontSize: 13, fontWeight: '700' }, emptyText: { color: C.muted, fontSize: 11, textAlign: 'center', lineHeight: 17, marginTop: 6 }, emptyAction: { color: C.purpleLight, fontSize: 12, fontWeight: '700', marginTop: 13 },
   tabBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingTop: 8, backgroundColor: C.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.line }, tabButton: { flex: 1, height: 48, alignItems: 'center', justifyContent: 'center', gap: 3 }, tabLabel: { color: C.muted, fontSize: 9, fontWeight: '600' }, activeText: { color: C.purpleLight }, addTab: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: -19, gap: 1 }, addCircle: { width: 49, height: 49, borderRadius: 25, backgroundColor: C.purple, borderWidth: 4, borderColor: C.bg, alignItems: 'center', justifyContent: 'center' },
   loginRoot: { flex: 1, backgroundColor: C.bg }, loginScroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 29, paddingVertical: 34 }, logoMark: { width: 53, height: 53, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: C.purple }, logoMarkText: { color: 'white', fontSize: 28, fontWeight: '900' }, loginBrand: { color: C.text, fontSize: 24, fontWeight: '800', marginTop: 14 }, loginBrandAccent: { color: C.purpleLight }, loginHeading: { color: C.text, fontWeight: '800', fontSize: 30, lineHeight: 37, marginTop: 38, letterSpacing: -0.8 }, loginSubheading: { color: C.muted, fontSize: 14, marginTop: 10 }, loginForm: { gap: 6, marginTop: 28 }, loginError: { color: '#ffaaa2', fontSize: 12, paddingVertical: 8 }, loginFoot: { color: C.faint, textAlign: 'center', fontSize: 11, marginTop: 27 },
