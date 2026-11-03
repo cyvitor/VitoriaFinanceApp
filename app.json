@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Vitoria Finance",
+    "slug": "vitoria-finance-app",
+    "version": "1.0.0",
+    "scheme": "vitoriafinance",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#11141c"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vitoriafinance.app"
+    },
+    "android": {
+      "package": "com.vitoriafinance.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#191d27",
+        "foregroundImage": "./assets/icon.png"
+      },
+      "predictiveBackGestureEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "@react-native-community/datetimepicker",
+      "expo-font"
+    ]
+  }
+}
