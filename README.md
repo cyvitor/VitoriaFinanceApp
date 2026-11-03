@@ -29,7 +29,7 @@ Leia o QR code com o Expo Go. No Windows, rode no Android:
 npm run android
 ```
 
-O endereço da API está definido em `App.tsx` como `https://vitoriafinance.vh5.xyz/api/v1`. A branch `codex/mobile-api` precisa ser implantada nesse serviço antes que o app consiga autenticar em produção. Para executar contra um servidor local, ajuste a constante `API` em `App.tsx` para o endereço acessível ao dispositivo.
+Por padrão, o app usa `https://vitoriafinance.vh5.xyz/api/v1`. Para testar outro serviço sem alterar o código, crie `.env.local` com `EXPO_PUBLIC_API_BASE_URL=http://<IP-DA-MAQUINA>:8000/api/v1`. Esse arquivo é ignorado pelo Git. A branch `codex/mobile-api` precisa ser implantada no serviço público antes que o app autentique em produção.
 
 ## Gerar instaladores
 

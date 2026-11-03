@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const API = 'https://vitoriafinance.vh5.xyz/api/v1';
+const API = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'https://vitoriafinance.vh5.xyz/api/v1';
 const TOKEN_KEY = 'vitoriafinance.mobile-token';
 const C = {
   bg: '#11141c', surface: '#191d27', raised: '#202532', line: '#2b3140',
