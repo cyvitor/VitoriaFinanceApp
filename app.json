@@ -31,7 +31,22 @@
     "plugins": [
       "expo-secure-store",
       "@react-native-community/datetimepicker",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Permita que a VitoriaFinance use o microfone para conversar por áudio.",
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permita que a VitoriaFinance acesse uma imagem para ajudar a registrar um gasto.",
+          "cameraPermission": "Permita que a VitoriaFinance fotografe um comprovante para ajudar a registrar um gasto."
+        }
+      ]
     ]
   }
 }

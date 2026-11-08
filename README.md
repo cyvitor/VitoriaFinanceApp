@@ -29,6 +29,23 @@ Leia o QR code com o Expo Go. No Windows, rode no Android:
 npm run android
 ```
 
+### Microfone no emulador Android
+
+O Android Emulator não encaminha o microfone do computador por padrão. Para usar no app a entrada padrão do Windows, inicie o AVD com `-allow-host-audio` antes de abrir o Expo Go:
+
+```powershell
+$avdName = "Pixel_6a_API_35"
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd $avdName -allow-host-audio
+```
+
+Troque `Pixel_6a_API_35` pelo nome do seu AVD. Se ele já estiver aberto, habilite a entrada apenas para a sessão atual:
+
+```powershell
+adb emu avd hostmicon
+```
+
+`hostmicon` deixa de valer quando o emulador reinicia; use `-allow-host-audio` para habilitar o encaminhamento a cada inicialização.
+
 Por padrão, o app usa `https://vitoriafinance.vh5.xyz/api/v1`. Para testar outro serviço sem alterar o código, crie `.env.local` com `EXPO_PUBLIC_API_BASE_URL=http://<IP-DA-MAQUINA>:8000/api/v1`. Esse arquivo é ignorado pelo Git. A branch `codex/mobile-api` precisa ser implantada no serviço público antes que o app autentique em produção.
 
 ## Gerar instaladores
